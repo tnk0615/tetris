@@ -1,0 +1,347 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="UTF-8">
+<title>Ultimate Tetris</title>
+<style>
+body { background:black; display:flex; gap:20px; justify-content:center; color:white; font-family:sans-serif; }
+canvas { background:#111; }
+</style>
+</head>
+<body>
+
+<canvas id="game" width="300" height="600"></canvas>
+
+<div>
+<h3>NEXT</h3>
+<canvas id="next" width="120" height="120"></canvas>
+<h3>HOLD (C)</h3>
+<canvas id="hold" width="120" height="120"></canvas>
+</div>
+
+<script>
+const COLS=10, ROWS=20, BLOCK=30;
+const canvas=document.getElementById("game");
+const ctx=canvas.getContext("2d");
+const nextCtx=document.getElementById("next").getContext("2d");
+const holdCtx=document.getElementById("hold").getContext("2d");
+
+let board=Array.from({length:ROWS},()=>Array(COLS).fill(null));
+
+const tetrominoes={
+I:{
+shape:[
+[0,0,0,0],
+[1,1,1,1],
+[0,0,0,0],
+[0,0,0,0]
+],
+color:"#00FFFF"
+},
+O:{shape:[[1,1],[1,1]],color:"#FFFF00"},
+T:{
+shape:[
+[0,1,0,0],
+[1,1,1,0],
+[0,0,0,0],
+[0,0,0,0]
+],
+color:"#800080"
+},
+S:{
+shape:[
+[0,1,1,0],
+[1,1,0,0],
+[0,0,0,0],
+[0,0,0,0]
+],
+color:"#00FF00"
+},
+Z:{
+shape:[
+[1,1,0,0],
+[0,1,1,0],
+[0,0,0,0],
+[0,0,0,0]
+],
+color:"#FF0000"
+},
+J:{
+shape:[
+[1,0,0,0],
+[1,1,1,0],
+[0,0,0,0],
+[0,0,0,0]
+],
+color:"#0000FF"
+},
+L:{
+shape:[
+[0,0,1,0],
+[1,1,1,0],
+[0,0,0,0],
+[0,0,0,0]
+],color:"#FFA500"
+}
+};
+
+const kicksJLSTZ = {
+"0>1":[[0,0],[-1,0],[-1,1],[0,-2],[-1,-2]],
+"1>0":[[0,0],[1,0],[1,-1],[0,2],[1,2]],
+"1>2":[[0,0],[1,0],[1,-1],[0,2],[1,2]],
+"2>1":[[0,0],[-1,0],[-1,1],[0,-2],[-1,-2]],
+"2>3":[[0,0],[1,0],[1,1],[0,-2],[1,-2]],
+"3>2":[[0,0],[-1,0],[-1,-1],[0,2],[-1,2]],
+"3>0":[[0,0],[-1,0],[-1,-1],[0,2],[-1,2]],
+"0>3":[[0,0],[1,0],[1,1],[0,-2],[1,-2]]
+};
+
+const kicksI = {
+"0>1":[[0,0],[-2,0],[1,0],[-2,-1],[1,2]],
+"1>0":[[0,0],[2,0],[-1,0],[2,1],[-1,-2]],
+"1>2":[[0,0],[-1,0],[2,0],[-1,2],[2,-1]],
+"2>1":[[0,0],[1,0],[-2,0],[1,-2],[-2,1]],
+"2>3":[[0,0],[2,0],[-1,0],[2,1],[-1,-2]],
+"3>2":[[0,0],[-2,0],[1,0],[-2,-1],[1,2]],
+"3>0":[[0,0],[1,0],[-2,0],[1,-2],[-2,1]],
+"0>3":[[0,0],[-1,0],[2,0],[-1,2],[2,-1]]
+};
+
+let bag=[];
+function generateBag(){
+bag=Object.keys(tetrominoes);
+for(let i=bag.length-1;i>0;i--){
+const j=Math.floor(Math.random()*(i+1));
+[bag[i],bag[j]]=[bag[j],bag[i]];
+}
+}
+function getNext(){ if(bag.length===0) generateBag(); return bag.pop(); }
+
+let currentType=getNext();
+let nextType=getNext();
+let holdType=null;
+let canHold=true;
+
+let rotation=0;
+let piece, color, pos;
+let lastMoveWasRotate=false;
+
+function spawn(type){
+currentType=type||nextType;
+if(!type) nextType=getNext();
+const data=tetrominoes[currentType];
+piece=data.shape.map(r=>[...r]);
+color=data.color;
+pos={x:3,y:-1};
+rotation=0;
+canHold=true;
+drawNext();
+drawHold();
+}
+
+function drawMini(ctx,type){
+ctx.clearRect(0,0,120,120);
+if(!type) return;
+const shape=tetrominoes[type].shape;
+shape.forEach((r,y)=>r.forEach((v,x)=>{
+if(v){
+ctx.fillStyle=tetrominoes[type].color;
+ctx.fillRect(x*30,y*30,28,28);
+}
+}));
+}
+
+function drawNext(){ drawMini(nextCtx,nextType); }
+function drawHold(){ drawMini(holdCtx,holdType); }
+
+function drawBlock(x,y,c,alpha=1){
+ctx.globalAlpha=alpha;
+ctx.fillStyle=c;
+ctx.fillRect(x*BLOCK,y*BLOCK,BLOCK-1,BLOCK-1);
+ctx.globalAlpha=1;
+}
+
+function draw(){
+ctx.clearRect(0,0,canvas.width,canvas.height);
+board.forEach((r,y)=>r.forEach((v,x)=>{ if(v) drawBlock(x,y,v); }));
+drawGhost();
+piece.forEach((r,y)=>r.forEach((v,x)=>{ if(v) drawBlock(pos.x+x,pos.y+y,color); }));
+}
+
+function collision(nx,ny){
+return piece.some((r,y)=>r.some((v,x)=>{
+if(!v) return false;
+let X=nx+x,Y=ny+y;
+return X<0||X>=COLS||Y>=ROWS||board[Y]?.[X];
+}));
+}
+
+function rotate(dir){
+if(currentType==="O") return; // Oは回転不要
+
+const oldPiece = piece.map(r=>[...r]);
+const oldRot = rotation;
+
+// 回転本体
+if(dir===1)
+piece = piece[0].map((_,i)=>piece.map(r=>r[i]).reverse());
+else
+for(let i=0;i<3;i++)
+piece = piece[0].map((_,i)=>piece.map(r=>r[i]).reverse());
+
+rotation = (rotation + dir + 4) % 4;
+
+const key = oldRot + ">" + rotation;
+
+// ミノごとにキック切替
+const table = currentType==="I" ? kicksI : kicksJLSTZ;
+const tests = table[key] || [[0,0]];
+
+for(const [dx,dy] of tests){
+  let newX = pos.x + dx;
+  let newY = pos.y + dy;
+
+  // ★ 床に埋まりそうなら1マス上も試す（I専用安定化）
+  if(currentType==="I" && collision(newX,newY)){
+    if(!collision(newX,newY-1)){
+      newY -= 1;
+    }
+  }
+
+  if(!collision(newX,newY)){
+    pos.x = newX;
+    pos.y = newY;
+    lastMoveWasRotate = true;
+    return;
+  }
+}
+
+// 全失敗
+piece = oldPiece;
+rotation = oldRot;
+}
+
+function merge(){
+
+piece.forEach((r,y)=>r.forEach((v,x)=>{
+if(v) board[pos.y+y][pos.x+x]=color;
+}));
+
+const cleared = clearLines();
+const tspin = checkTSpin();
+
+if(tspin && cleared>0){
+console.log(tspin + " x" + cleared);
+}
+
+lastMoveWasRotate=false;
+}
+
+function clearLines(){
+let cleared = 0;
+
+board = board.filter(r=>{
+if(r.every(c=>c!==null)){
+cleared++;
+return false;
+}
+return true;
+});
+
+while(board.length<ROWS)
+board.unshift(Array(COLS).fill(null));
+
+return cleared;
+}
+
+function drop(){
+if(!collision(pos.x,pos.y+1)) pos.y++;
+else{
+merge();
+clearLines();
+spawn();
+}
+lastMoveWasRotate=false;
+draw();
+}
+
+function hardDrop(){
+while(!collision(pos.x,pos.y+1)) pos.y++;
+drop();
+}
+
+function hold(){
+if(!canHold) return;
+if(!holdType){
+holdType=currentType;
+spawn();
+}else{
+let temp=holdType;
+holdType=currentType;
+spawn(temp);
+}
+canHold=false;
+drawHold();
+}
+
+function drawGhost(){
+let gy=pos.y;
+while(!collision(pos.x,gy+1)) gy++;
+piece.forEach((r,y)=>r.forEach((v,x)=>{
+if(v) drawBlock(pos.x+x,gy+y,color,0.3);
+}));
+}
+
+function checkTSpin(){
+if(currentType!=="T" || !lastMoveWasRotate) return null;
+
+const cx = pos.x + 1;
+const cy = pos.y + 1;
+
+let corners = 0;
+const filled = ([x,y]) =>
+  x<0 || x>=COLS || y>=ROWS || board[y]?.[x];
+
+const cornerCells = [
+[cx-1,cy-1],
+[cx+1,cy-1],
+[cx-1,cy+1],
+[cx+1,cy+1]
+];
+
+cornerCells.forEach(c=>{
+if(filled(c)) corners++;
+});
+
+if(corners<3) return null;
+
+// Mini判定（前方2マス）
+let front;
+if(rotation===0) front=[[cx-1,cy-1],[cx+1,cy-1]];
+if(rotation===1) front=[[cx+1,cy-1],[cx+1,cy+1]];
+if(rotation===2) front=[[cx-1,cy+1],[cx+1,cy+1]];
+if(rotation===3) front=[[cx-1,cy-1],[cx-1,cy+1]];
+
+let frontFilled = front.filter(filled).length;
+
+if(frontFilled===2) return "T-SPIN";
+return "T-SPIN MINI";
+}
+
+document.addEventListener("keydown",e=>{
+if(e.key==="ArrowLeft"&&!collision(pos.x-1,pos.y)) pos.x--;
+if(e.key==="ArrowRight"&&!collision(pos.x+1,pos.y)) pos.x++;
+if(e.key==="ArrowDown") drop();
+if(e.key==="ArrowUp") rotate(-1);
+if(e.key==="z"||e.key==="Z") rotate(1);
+if(e.code==="Space") hardDrop();
+if(e.key==="c"||e.key==="C") hold();
+draw();
+});
+
+setInterval(drop,10000);
+spawn(currentType);
+draw();
+</script>
+</body>
+</html>
